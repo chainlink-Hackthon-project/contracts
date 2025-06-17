@@ -62,7 +62,7 @@ contract EthContract {
         );
 
         // we wont go further , if collateral is not even enough to pay for gas + ccip message fees
-        if (msg.value >= ccipFees) {
+        if (msg.value <= ccipFees) {
             revert NotEnoughBalance(msg.value, ccipFees);
         }
 
