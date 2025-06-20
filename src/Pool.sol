@@ -3,6 +3,7 @@ pragma solidity >=0.7.0 <0.9.0;
 
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {InterestModel} from "./InterestModel.sol";
 import { AggregatorV3Interface }  from "lib/chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
 
@@ -11,11 +12,11 @@ import { Client } from "lib/chainlink/contracts/src/v0.8/ccip/libraries/Client.s
 import {IRouterClient} from "lib/chainlink/contracts/src/v0.8/ccip/interfaces/IRouterClient.sol";
 
 /// @notice A lending pool: deposit USDC for LP, borrow/repay with utilization-based rates
-contract Pool is ERC20("LP Token", "LPT"), CCIPReceiver {
+contract Pool is ERC20, CCIPReceiver, Ownable {
     using InterestModel for uint256;
 
-    /// @notice Underlying USDC token
-    IERC20 public immutable usdc;
+    /// @notice Underlying USDT token on Avalanche
+    IERC20 public immutable usdt;
 
     /// chainlink feeda on Avalanche
     AggregatorV3Interface public immutable i_ethUsdFeed;
@@ -23,6 +24,11 @@ contract Pool is ERC20("LP Token", "LPT"), CCIPReceiver {
 
      /// CCIP router client (inherited CCIPReceiver only handles incoming)
     IRouterClient public immutable ccipRouter;
+    modifier onlyCcipRouter() {
+        require(msg.sender ==address(ccipRouter), "Pool: caller is not CCIP router");
+        _;
+    }
+
     /// Chainlink CCIP selector for Ethereum Sepolia (example: 1)
     uint64 public immutable i_ethChainSelector;
     /// your Vault's address on Ethereum
@@ -51,6 +57,15 @@ contract Pool is ERC20("LP Token", "LPT"), CCIPReceiver {
     mapping(bytes32 => LockInfo) public locks;
     mapping(address => bytes32) public userLocks; // in case if we need all the lockids locked by user
 
+    //after 2 confirmations only mint function will be called, one by chainlink and other by backend
+    mapping(bytes32 => mapping(address => mapping(uint256 => uint8))) public lockId_account_confirmations;
+
+    /// @notice Once we hit 2 confirms, we mark the lock as verified
+    mapping(bytes32 => bool) public lockVerified;
+
+    // guard to ensure we only mint once per lockId
+    mapping(bytes32 => bool) public isTxDone;
+
     /// @notice Reserve factor (portion of interest protocol keeps), e.g. 1000 = 10%
     uint256 public reserveFactorBps = 1_000;
 
@@ -60,32 +75,44 @@ contract Pool is ERC20("LP Token", "LPT"), CCIPReceiver {
     uint256 public slope2Bps = 3_000; // 30% slope after kink
     uint256 public kinkBps   = 8_000; // 80% utilization
 
+    /// @notice Last CCIP message ID we saw
+    bytes32 public s_lastReceivedMessageId;
+    /// @notice Raw payload of the last CCIP message
+    bytes  public s_lastReceivedData;
+
     event Deposited(address indexed user, uint256 amount);
     event Withdrawn(address indexed user, uint256 amount);
-    event Borrowed(address indexed user, uint256 amount);
+    event Borrowed(address indexed user, uint256 amount, uint256 rateBps, uint256 timestamp);
     event Repaid(address indexed user,   uint256 amount);
+    event MessageReceived(bytes32 indexed messageId, uint64 indexed sourceChain, address sender, bytes data);
     event MessageSent( bytes32 indexed messageId, uint64 indexed destChain, address receiver, address user);
 
-    constructor(address _usdc, address _ethUsdFeed, address _volFeed, address router, uint64 _ethChainSelector, address i_ethVaultReceiver)  CCIPReceiver(router) {
-        require(_usdc != address(0), "Pool: zero USDC");
+    constructor(address _usdt, address _ethUsdFeed, address _volFeed, address _router, uint64 _ethChainSelector, address _ethVaultReceiver)ERC20("LP Token", "LPT") CCIPReceiver(_router) Ownable(msg.sender) {
+        require(_usdt != address(0), "Pool: zero USDC");
         require(_ethUsdFeed != address(0), "Pool: zero USDC");
         require(_volFeed != address(0), "Pool: zerp vol feed");
         require(i_ethVaultReceiver!= address(0), "Pool: zero vault receiver");
 
-        usdc = IERC20(_usdc);
+        usdt = IERC20(_usdt);
         i_ethUsdFeed = AggregatorV3Interface(_ethUsdFeed);
         i_volFeed = AggregatorV3Interface(_volFeed);
-        ccipRouter = IRouterClient(router);
+        ccipRouter = IRouterClient(_router);
         i_ethChainSelector = _ethChainSelector;
-        i_ethVaultReceiver = i_ethVaultReceiver;
+        i_ethVaultReceiver = _ethVaultReceiver;
         lastAccrual = block.timestamp;
     }
 
     /// @notice CCIP hook - called by the Router when ethereum vault emits a lock 
-    function _ccipReceive(Client.Any2EVMMessage memory msg_) internal override {
+    function _ccipReceive(Client.Any2EVMMessage memory msg_) internal override onlyCcipRouter {
+
+        emit MessageReceived(msg_.messageId, msg_.sourceChainSelector, abi.decode(msg_.sender,(address)), msg_.data);
+
+        s_lastReceivedMessageId = msg_.messageId;
+        s_lastReceivedData = msg_.data;
+
         //  decode the payload: (user, lockId, amountWei)
         (address user, bytes32 lockId, uint256 amountWei) = abi.decode(msg_.data, (address, bytes32, uint256));
-
+        
         // store the lockId so we can refer back to it later
         locks[lockId] = LockInfo({user: user, amountWei: amountWei});  
         userLocks[user] = lockId;
@@ -93,18 +120,30 @@ contract Pool is ERC20("LP Token", "LPT"), CCIPReceiver {
         // record their collateral
         collateralWei[user] = amountWei;
 
-         // auto-mint USDC by borrowing up to their LTV
-        uint256 usdCol = collateralUsd(user);
-        uint256 ltvBps = currentLTVBps();
-        uint256 mintAmt = (usdCol * ltvBps) / 10_000;
-    
-
-    // increase debt & totalBorrows, then send USDC
-    debt[user] += mintAmt;
-    totalBorrows += mintAmt;
-    usdc.transfer(user, mintAmt);
-    emit Borrowed(user, mintAmt);
+        // step-1 of confirmation 
+        uint8 count = lockId_account_confirmations[lockId][user][amountWei];
+        if(count ==0){
+            lockId_account_confirmations[lockId][user][amountWei] = 1;
+        }
+        else if(count ==1){
+            lockId_account_confirmations[lockId][user][amountWei] = 2;
+            lockVerified[lockId] = true;
+        }
 }
+// backend confirmation
+function backendConfirmation(address user, bytes32 lockId, uint256 amountWei) external onlyOwner {
+    uint8 count = lockId_account_confirmations[lockId][user][amountWei];
+    if(count == 0){
+        lockId_account_confirmations[lockId][user][amountWei] = 1;
+    }
+    else if(count ==1){
+            lockId_account_confirmations[lockId][user][amountWei] = 2;
+            lockVerified[lockId] = true;
+    }
+}
+
+
+
 
 /// @notice Build and sends the ccip message to unlock on ethereum 
 function _sendUnlockMessage(address user) internal {
@@ -137,10 +176,11 @@ function _sendUnlockMessage(address user) internal {
 
 
     /// @notice called by your CCIp handler when the user locks eth on ethereum
-    function setCollateral(address user, uint256 amountWei) external {
+    function setCollateral(address user, uint256 amountWei) external onlyCcipRouter{
         // TODO: restrict this to only CCIP endpoint 
         collateralWei[user] = amountWei;
     }
+
 
     /// @notice Convert a user’s ETH (wei) → USD (6 decimals like USDC)
     function collateralUsd(address user) public view returns (uint256) {
@@ -180,7 +220,7 @@ function _sendUnlockMessage(address user) internal {
         if (delta == 0) return;
 
         // 1. Compute current APR in BPS
-        uint256 cash   = usdc.balanceOf(address(this));
+        uint256 cash   = usdt.balanceOf(address(this));
         uint256 utr    = InterestModel.utilizationRate(cash, totalBorrows);
         uint256 aprBps = InterestModel.getBorrowRate(
             utr, baseBps, slope1Bps, slope2Bps, kinkBps
@@ -199,8 +239,8 @@ function _sendUnlockMessage(address user) internal {
     }
 
     /// @notice Current borrow APR (in BPS)
-    function borrowAPR() external view returns (uint256) {
-        uint256 cash   = usdc.balanceOf(address(this));
+    function borrowAPR() public view returns (uint256) {
+        uint256 cash   = usdt.balanceOf(address(this));
         uint256 utr    = InterestModel.utilizationRate(cash, totalBorrows);
         return InterestModel.getBorrowRate(
             utr, baseBps, slope1Bps, slope2Bps, kinkBps
@@ -208,8 +248,8 @@ function _sendUnlockMessage(address user) internal {
     }
 
     /// @notice Current supply APR (in BPS)
-    function supplyAPR() external view returns (uint256) {
-        uint256 cash        = usdc.balanceOf(address(this));
+    function supplyAPR() public view returns (uint256) {
+        uint256 cash        = usdt.balanceOf(address(this));
         uint256 utr         = InterestModel.utilizationRate(cash, totalBorrows);
         uint256 borrowBps   = InterestModel.getBorrowRate(
             utr, baseBps, slope1Bps, slope2Bps, kinkBps
@@ -219,49 +259,108 @@ function _sendUnlockMessage(address user) internal {
         );
     }
 
-    /// @notice Deposit USDC and mint LP tokens
+    // ========== Deposit & Withdraw ==========
+    /// @notice Returns current USDT in the pool
+    function totalAssets() public view returns (uint256) {
+        return usdt.balanceOf(address(this));
+    }
+
+    /// @notice Deposit USDT and mint LP shares
     function deposit(uint256 amount) external {
         accrueInterest();
         require(amount > 0, "Pool: zero deposit");
-        usdc.transferFrom(msg.sender, address(this), amount);
-        _mint(msg.sender, amount);
+
+
+       usdt.transferFrom(msg.sender, address(this), amount);
+
+        uint256 assetsBefore = totalAssets() - amount;
+        uint256 supply       = totalSupply();
+        uint256 shares;
+        if (supply == 0 || assetsBefore == 0) {
+            shares = amount;
+        } else {
+            shares = (amount * supply) / assetsBefore;
+        }
+
+        _mint(msg.sender, shares);
         emit Deposited(msg.sender, amount);
     }
 
-    /// @notice Burn LP tokens and redeem USDC
-    function withdraw(uint256 lpAmount) external {
+    /// @notice Burn LP shares and redeem USDT
+    function withdraw(uint256 shareAmount) external {
         accrueInterest();
-        require(lpAmount > 0, "Pool: zero withdraw");
-        _burn(msg.sender, lpAmount);
-        usdc.transfer(msg.sender, lpAmount);
-        emit Withdrawn(msg.sender, lpAmount);
+        require(shareAmount > 0, "Pool: zero withdraw");
+
+        uint256 supply    = totalSupply();
+        uint256 assets    = totalAssets();
+        uint256 amountOut = (shareAmount * assets) / supply;
+
+        _burn(msg.sender, shareAmount);
+
+       usdt.transfer(msg.sender, amountOut);
+
+        emit Withdrawn(msg.sender, amountOut);
     }
 
-    /// @notice Now enforces that (oldDebt+amount) <=collateralUsd * dynamicLTV%
-    function borrow(uint256 amount) external {
-        accrueInterest();
-        require(amount > 0, "Pool: zero borrow");
-        // TODO: enforce dynamic LTV or collateral check before this
-        uint256 maxBorrow = (collateralUsd(msg.sender)* currentLTVBps()) / 10_000;
-        require(debt[msg.sender] + amount <=maxBorrow, "Exceeds dynamic LTV");
+    // ========== Borrow & Repay ==========
+    function borrowWithLock(bytes32 lockId, uint256 amount) external {
+        require(lockVerified[lockId], "Pool: lock not confirmed");
+        LockInfo memory info = locks[lockId];
+        require(info.user == msg.sender, "Pool: not lock owner");
 
+        uint256 maxBorrow = (collateralUsd(msg.sender) * currentLTVBps()) / 10_000;
+        require(amount > 0, "Pool: zero borrow");
+        require(debt[msg.sender] + amount <= maxBorrow, "Pool: exceeds dynamic LTV");
+
+        accrueInterest();
+        uint256 rateNow = borrowAPR();
         debt[msg.sender] += amount;
-        totalBorrows     += amount;
-        usdc.transfer(msg.sender, amount);
+        totalBorrows    += amount;
+
+        usdt.transfer(msg.sender, amount, rateNow, block.timestamp);
+
         emit Borrowed(msg.sender, amount);
     }
 
-    /// @notice Repay USDC loan
+    
+
     function repay(uint256 amount) external {
         accrueInterest();
         require(amount > 0, "Pool: zero repay");
         require(debt[msg.sender] >= amount, "Pool: overpay");
-        usdc.transferFrom(msg.sender, address(this), amount);
-        debt[msg.sender]   -= amount;
-        totalBorrows      -= amount;
+
+
+       usdt.transferFrom(msg.sender, address(this), amount);
+
+        debt[msg.sender]  -= amount;
+        totalBorrows     -= amount;
         emit Repaid(msg.sender, amount);
 
-        // Send a CCIP message back to ethereum to unlock collateral
         _sendUnlockMessage(msg.sender);
     }
+
+        //=========OWNER-ONLY SETTERS ===
+    
+    function setReserveFactor(uint256 newBps) external onlyOwner {
+        require(newBps <= 10_000, "Pool: invalid BPS");
+        reserveFactorBps = newBps;
+    }
+
+    function setCurveParams(uint256 _baseBps, uint256 _slope1Bps, uint256 _slope2Bps, uint256 _kinkBps) external onlyOwner{
+        require(_baseBps <= 10_000, "bad base");
+        require(_slope1Bps <= 50_000, "bad slope1");
+        require(_slope2Bps <= 100_000, "bad slope2");
+        require(_kinkBps <= 10_000, "bad kink");
+        baseBps = _baseBps;
+        slope1Bps = _slope1Bps;
+        slope2Bps = _slope2Bps;
+        kinkBps = _kinkBps;
+    }
+
+    function setFeeds(address _ethUsdFeed, address _volFeed) external onlyOwner {
+        require(_ethUsdFeed != address(0) && _volFeed != address(0), "Pool: zero feed");
+        i_ethUsdFeed = AggregatorV3Interface(_ethUsdFeed);
+        i_volFeed = AggregatorV3Interface(_volFeed);
+    }
+
 }
