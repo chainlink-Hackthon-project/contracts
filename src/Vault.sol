@@ -20,6 +20,7 @@ contract Vault is ReentrancyGuard {
 
     // timestamp when fundds become available for unlocking
     uint256 public immutable i_maturity;
+    uint256 public totalValueLocked;
 
     constructor(uint256 duration) {
         require(duration>0, "Vault : zero duration");
@@ -30,6 +31,7 @@ contract Vault is ReentrancyGuard {
         require(msg.value>0, "Vault: zero amount");
 
         locked[msg.sender] += msg.value;
+        totalValueLocked += msg.value;
         emit Locked(msg.sender, msg.value);
     }
 
@@ -44,6 +46,7 @@ contract Vault is ReentrancyGuard {
         
         require(amount>0, "Vault:nothing to unlock");
         locked[msg.sender]  = 0;
+        totalValueLocked -= amount;
 
         (bool succ, ) = payable(msg.sender).call{value: amount}("");
         require(succ, "Vault: transfer failed");

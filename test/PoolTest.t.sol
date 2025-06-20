@@ -82,4 +82,75 @@ contract PoolTest is Test {
     }
 
 
+     // ──────────────── Revert Tests ────────────────
+
+    function testDepositZeroReverts() public {
+        vm.prank(user);
+        vm.expectRevert("Pool: zero deposit");
+        pool.deposit(0);
+    }
+
+    function testWithdrawZeroReverts() public {
+        vm.prank(user);
+        vm.expectRevert("Pool: zero withdraw");
+        pool.withdraw(0);
+    }
+
+    function testRepayZeroReverts() public {
+        vm.prank(user);
+        vm.expectRevert("Pool: zero repay");
+        pool.repay(0);
+    }
+
+    // ──────────────── APR View Tests ────────────────
+
+    /// @notice At 0% utilization, borrow APR == baseBps == 300 and supply APR == 0.
+    function testAPRAtZeroUtilization() public view {
+        assertEq(pool.borrowAPR(), 300);
+        assertEq(pool.supplyAPR(), 0);
+    }
+
+    /// @notice At 40% utilization (deposit 1000 → borrow 400):
+    /// borrowAPR = 3% + 15% * 40% = 3% + 6% = 9% → 900 bps
+    /// supplyAPR = U * borrowAPR * (1 - 10% reserve) = 0.4 * 9% * 0.9 = 3.24% → 324 bps
+    function testAPRAtFortyPercentUtilization() public {
+        vm.startPrank(user);
+        pool.deposit(1_000e6);
+        pool.borrow(400e6);
+        vm.stopPrank();
+
+        uint256 borrowAPR = pool.borrowAPR();
+        uint256 supplyAPR = pool.supplyAPR();
+
+        assertEq(borrowAPR, 900, "expected 9% borrow APR (900bps)");
+        assertEq(supplyAPR, 324, "expected 3.24% supply APR (324bps)");
+    }
+
+    // ──────────────── Interest Accrual Tests ────────────────
+
+    /// @notice After 1 year at 40% utilization:
+    /// - interest       = 400 * 9% = 36 USDC  → 36e6 units
+    /// - fees (10%)     = 3.6 USDC            → 3.6e6 units
+    /// - added to borrows = 36 − 3.6 = 32.4   → 32.4e6 units
+    function testAccrueInterestFortyPercentUtilAfterOneYear() public {
+        vm.startPrank(user);
+        pool.deposit(1_000e6);
+        pool.borrow(400e6);
+        vm.stopPrank();
+
+        // Fast-forward exactly one year
+        vm.warp(block.timestamp + 365 days);
+
+        // Manually accrue interest
+        pool.accrueInterest();
+
+        // Check protocol reserves (10% of 36e6 = 3.6e6)
+        uint256 expectedFee = 36e6 * pool.reserveFactorBps() / 10_000;
+        assertEq(pool.totalReserves(), expectedFee);
+
+        // Check totalBorrows increased by (36e6 − 3.6e6) = 32.4e6
+        uint256 expectedBorrows = 400e6 + (36e6 - expectedFee);
+        assertEq(pool.totalBorrows(), expectedBorrows);
+    }
+
 }
