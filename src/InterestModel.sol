@@ -18,7 +18,8 @@ library InterestModel {
         returns (uint256 utrBps)
     {
         // If nobody’s borrowed or there’s no cash, utilization is zero.
-        if (borrows == 0 || cash == 0) return 0;
+        if (borrows == 0) return 0;
+        if (cash ==0 && borrows > 0) return BPS;
         // utrBps = borrows * BPS / (cash + borrows)
         utrBps = (borrows * BPS) / (cash + borrows);
     }
