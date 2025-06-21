@@ -352,9 +352,7 @@ contract Pool is ERC20, CCIPReceiver, Ownable {
 
         uint256 before   = totalAssets() - amount;
         uint256 supply   = totalSupply();
-        uint256 shares   = supply == 0 || before == 0
-            ? amount
-            : (amount * supply) / before;
+        uint256 shares   = supply == 0 || before == 0 ? amount : (amount * supply) / before;
 
         _mint(msg.sender, shares);
         emit Deposited(msg.sender, amount, shares);
@@ -401,6 +399,7 @@ contract Pool is ERC20, CCIPReceiver, Ownable {
         uint256 maxBorrow = (collateralUsd(msg.sender) * currentLTVBps()) / 10_000;
         require(amount > 0, "Pool: zero borrow");
         require(debt[msg.sender] + amount <= maxBorrow,  "Pool: exceeds LTV");
+        require(usdt.balanceOf(address(this)) >= amount, "Pool: insufficient liquidity");
 
         uint256 rateNow = borrowAPR();
         debt[msg.sender] += amount;
