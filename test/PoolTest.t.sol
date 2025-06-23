@@ -6,6 +6,7 @@ import { Pool } from "../src/Pool.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
 
+
 contract MockUSDT is ERC20{
     constructor() ERC20("Mock USDT", "mUSDT") {
         _mint(msg.sender, 1_000_000e6);
@@ -20,9 +21,6 @@ contract PoolTest is Test {
     Pool public pool;
     address public alice = address(0xA11CE);
     address public bob = address(0xB0B);
-
-
-
 
     // ─────────────────────────────────────────────────────────────────────────
     //                              SETUP 

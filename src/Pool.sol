@@ -398,8 +398,8 @@ contract Pool is ERC20, CCIPReceiver, Ownable {
 
         uint256 maxBorrow = (collateralUsd(msg.sender) * currentLTVBps()) / 10_000;
         require(amount > 0, "Pool: zero borrow");
-        require(debt[msg.sender] + amount <= maxBorrow,  "Pool: exceeds LTV");
         require(usdt.balanceOf(address(this)) >= amount, "Pool: insufficient liquidity");
+        require(debt[msg.sender] + amount <= maxBorrow,  "Pool: exceeds LTV");
 
         uint256 rateNow = borrowAPR();
         debt[msg.sender] += amount;
@@ -427,13 +427,15 @@ contract Pool is ERC20, CCIPReceiver, Ownable {
         // If fully repaid, clear lock and send unlock message
         if (debt[msg.sender] == 0) {
             bytes32 lockId = userLocks[msg.sender];
-            require(lockId != bytes32(0), "Pool: no lock to unlock");
 
+            // clear everythin onchain so tests see it
             lockVerified[lockId]    = false;
             userLocks[msg.sender]   = bytes32(0);
             collateralWei[msg.sender] = 0;
 
-            _sendUnlockMessage(msg.sender);
+            if(lockId != bytes32(0)){
+              _sendUnlockMessage(lockId,msg.sender);
+            }
         }
     }
 
@@ -443,11 +445,7 @@ contract Pool is ERC20, CCIPReceiver, Ownable {
  * @param user The borrower who has fully repaid
  * @return messageId The CCIP message ID
  */
-function _sendUnlockMessage(address user) internal returns (bytes32 messageId) {
-    // Fetch their lockId
-    bytes32 lockId = userLocks[user];
-    require(lockId != bytes32(0), "Pool: no lock to unlock");
-
+function _sendUnlockMessage(bytes32 lockId, address user) internal returns (bytes32 messageId) {
     // Payload = (user, lockId)
     bytes memory data = abi.encode(user, lockId);
 
