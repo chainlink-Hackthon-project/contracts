@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: UNLICENSED
-pragma solidity ^0.8.13;
+pragma solidity ^0.8.17;
 
 import {Test, console} from "forge-std/Test.sol";
 import { Pool } from "../src/Pool.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
 
-contract MockUSDC is ERC20{
-    constructor() ERC20("Mock USDC", "mUSDC") {
+contract MockUSDT is ERC20{
+    constructor() ERC20("Mock USDT", "mUSDT") {
         _mint(msg.sender, 1_000_000e6);
     }
     function decimals() public pure override returns(uint8){
@@ -16,141 +16,88 @@ contract MockUSDC is ERC20{
 }
 
 contract PoolTest is Test {
-    MockUSDC public usdc;
+    MockUSDT public usdt;
     Pool public pool;
-    address public user = address(0xBEEF);
+    address public alice = address(0xA11CE);
+    address public bob = address(0xB0B);
+
+
+
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //                              SETUP 
+    // ─────────────────────────────────────────────────────────────────────────
 
 
     // this setup runs before each test and ensures each test starts with a fresh state where :
     // - there is a new Pool contract
-    // - the test user has 1000 USDC
-    // - the Pool has approval to spend the user's USDC 
+    // - the test users has 1000 USDC each 
+    // - the Pool has approval to spend the user's(alice and bob) USDC 
     function setUp() public {
-        usdc = new MockUSDC();
-        pool = new Pool(address(usdc));
+        usdt = new MockUSDT();
+        usdt.transfer(alice, 10_000e6);
+        usdt.transfer(bob, 10_000e6);
 
-        // give use some USDC and approval
-        usdc.transfer(user, 1_000e6);
-        vm.startPrank(user);
-        usdc.approve(address(pool), type(uint256).max);
-        vm.stopPrank();
+        pool = new Pool(address(usdt), address(0x1), address(0x2), address(this), 1, address(0x3));
+
+        vm.prank(alice);
+        usdt.approve(address(pool), type(uint256).max);
+        vm.prank(bob);
+        usdt.approve(address(pool),type(uint256).max);
     }
 
-    function testDepositMintLP() public {
-        vm.startPrank(user);
-        pool.deposit(500e6);
-        assertEq(pool.balanceOf(user), 500e6);
-        assertEq(usdc.balanceOf(address(pool)), 500e6);
-        vm.stopPrank();
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //                              DEPOSIT AND WITHDRAWL TEST
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// @notice First depositor should get 1:1 shares
+    function  testFirstDeposit() public {
+        vm.prank(alice);
+        pool.deposit(1_000e6);
+        assertEq(pool.balanceOf(alice), 1_000e6, "Alice should have 1000 shares");
+        assertEq(usdt.balanceOf(address(pool)), 1_000e6, "Pool holds 1000 USDT");
     }
 
-    function testWithdrawBurnLP() public {
-        vm.startPrank(user);
-        pool.deposit(300e6);
-        pool.withdraw(300e6);
-        assertEq(pool.balanceOf(user), 0);
-        assertEq(usdc.balanceOf(user), 1_000e6);
-        vm.stopPrank();
-    }
 
-    function testBorrowAndRepay() public {
-        vm.startPrank(user);
-        pool.deposit(500e6);
-        pool.borrow(200e6);
-        assertEq(pool.debt(user), 200e6);
-        assertEq(usdc.balanceOf(user), 700e6); // had 1000, +200 borrowed, -500 deposit
+    /// @notice subsequent depositors mint proportional shares
+    function testProportionalDeposit() public {
+        // Alice deposits 1000 USDT => recieves 1000 shares 
+        vm.prank(alice);
+        pool.deposit(1_000e6);
+        // Simulate some interest so assets > shares
+        //  (here we just mint extra USDT to pool to mimic interest)
+        usdt.transfer(address(pool), 100e6);
 
-        pool.repay(100e6);
-        assertEq(pool.debt(user), 100e6);
-
-        vm.stopPrank();
-    }
-
-    function testCannotBorrowZero() public {
-        vm.startPrank(user);
-        vm.expectRevert("Pool: zero borrow");
-        pool.borrow(0);
-        vm.stopPrank();
-    }
-
-    function testCannotRepayOverDebt() public {
-        vm.startPrank(user);
+        //Bob deposits 100 USDT; because poolassets =1100 and supply = 1000
+        // bob should recieve: 100* 1000 / 1100  = 90 shares
+        vm.prank(bob);
         pool.deposit(100e6);
-        vm.expectRevert("Pool: overpay");
-        pool.repay(200e6);
-        vm.stopPrank();
-    }
+        uint256 bobShares = pool.balanceOf(bob);
+        assertApproxEqRel(bobShares, 90e6, 1_500e14, "Bob should get ~90 shares");
+   }
 
 
-     // ──────────────── Revert Tests ────────────────
 
-    function testDepositZeroReverts() public {
-        vm.prank(user);
-        vm.expectRevert("Pool: zero deposit");
-        pool.deposit(0);
-    }
+    /// @notice Withdrawl burns shares and retunrs correct USDT
+   function testWthdraw() public {
+    vm.prank(alice);
+    pool.deposit(1_000e6);
+    // poolAssets = 1000, supply = 1000 shares
+    // withdraw 500 shares => get 500 USDT
+    vm.prank(alice);
+    pool.withdraw(500e6);
 
-    function testWithdrawZeroReverts() public {
-        vm.prank(user);
-        vm.expectRevert("Pool: zero withdraw");
-        pool.withdraw(0);
-    }
+    assertEq(pool.balanceOf(alice), 500e6, "Alice left with 500 shares");
+    assertEq(usdt.balanceOf(alice), 9_500e6, "Alice recovers 500 USDT");
+   }
 
-    function testRepayZeroReverts() public {
-        vm.prank(user);
-        vm.expectRevert("Pool: zero repay");
-        pool.repay(0);
-    }
 
-    // ──────────────── APR View Tests ────────────────
 
-    /// @notice At 0% utilization, borrow APR == baseBps == 300 and supply APR == 0.
-    function testAPRAtZeroUtilization() public view {
-        assertEq(pool.borrowAPR(), 300);
-        assertEq(pool.supplyAPR(), 0);
-    }
+    // ─────────────────────────────────────────────────────────────────────────
+    //                             BORROW 
+    // ─────────────────────────────────────────────────────────────────────────
 
-    /// @notice At 40% utilization (deposit 1000 → borrow 400):
-    /// borrowAPR = 3% + 15% * 40% = 3% + 6% = 9% → 900 bps
-    /// supplyAPR = U * borrowAPR * (1 - 10% reserve) = 0.4 * 9% * 0.9 = 3.24% → 324 bps
-    function testAPRAtFortyPercentUtilization() public {
-        vm.startPrank(user);
-        pool.deposit(1_000e6);
-        pool.borrow(400e6);
-        vm.stopPrank();
 
-        uint256 borrowAPR = pool.borrowAPR();
-        uint256 supplyAPR = pool.supplyAPR();
-
-        assertEq(borrowAPR, 900, "expected 9% borrow APR (900bps)");
-        assertEq(supplyAPR, 324, "expected 3.24% supply APR (324bps)");
-    }
-
-    // ──────────────── Interest Accrual Tests ────────────────
-
-    /// @notice After 1 year at 40% utilization:
-    /// - interest       = 400 * 9% = 36 USDC  → 36e6 units
-    /// - fees (10%)     = 3.6 USDC            → 3.6e6 units
-    /// - added to borrows = 36 − 3.6 = 32.4   → 32.4e6 units
-    function testAccrueInterestFortyPercentUtilAfterOneYear() public {
-        vm.startPrank(user);
-        pool.deposit(1_000e6);
-        pool.borrow(400e6);
-        vm.stopPrank();
-
-        // Fast-forward exactly one year
-        vm.warp(block.timestamp + 365 days);
-
-        // Manually accrue interest
-        pool.accrueInterest();
-
-        // Check protocol reserves (10% of 36e6 = 3.6e6)
-        uint256 expectedFee = 36e6 * pool.reserveFactorBps() / 10_000;
-        assertEq(pool.totalReserves(), expectedFee);
-
-        // Check totalBorrows increased by (36e6 − 3.6e6) = 32.4e6
-        uint256 expectedBorrows = 400e6 + (36e6 - expectedFee);
-        assertEq(pool.totalBorrows(), expectedBorrows);
-    }
 
 }

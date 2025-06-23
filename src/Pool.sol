@@ -452,7 +452,7 @@ function _sendUnlockMessage(address user) internal returns (bytes32 messageId) {
     bytes memory data = abi.encode(user, lockId);
 
     // Build CCIP message
-    Client.EVM2AnyMessage memory msg = Client.EVM2AnyMessage({
+    Client.EVM2AnyMessage memory ccipMsg = Client.EVM2AnyMessage({
         receiver:     abi.encode(i_ethVaultReceiver),
         data:         data,
         tokenAmounts: new Client.EVMTokenAmount[](0),
@@ -466,13 +466,13 @@ function _sendUnlockMessage(address user) internal returns (bytes32 messageId) {
     });
 
     // Query native AVAX fee and ensure we can pay it
-    uint256 fee = ccipRouter.getFee(i_ethChainSelector, msg);
+    uint256 fee = ccipRouter.getFee(i_ethChainSelector, ccipMsg);
     require(address(this).balance >= fee, "Pool: insufficient AVAX");
 
     // Send and emit
     messageId = ccipRouter.ccipSend{ value: fee }(
       i_ethChainSelector,
-      msg
+      ccipMsg
     );
     emit MessageSent(messageId, i_ethChainSelector, i_ethVaultReceiver, user);
 }
@@ -534,7 +534,7 @@ function _sendUnlockMessage(address user) internal returns (bytes32 messageId) {
         uint256 amountWei
     ) internal {
         bytes memory data = abi.encode(lockId, liquidator, amountWei);
-        Client.EVM2AnyMessage memory msg = Client.EVM2AnyMessage({
+        Client.EVM2AnyMessage memory ccipMsg = Client.EVM2AnyMessage({
             receiver:     abi.encode(i_ethVaultReceiver),
             data:         data,
             tokenAmounts: new Client.EVMTokenAmount[](0),
@@ -547,12 +547,12 @@ function _sendUnlockMessage(address user) internal returns (bytes32 messageId) {
             feeToken:     address(0)
         });
 
-        uint256 fee = ccipRouter.getFee(i_ethChainSelector, msg);
+        uint256 fee = ccipRouter.getFee(i_ethChainSelector, ccipMsg);
         require(address(this).balance >= fee, "Pool: insufficient AVAX");
 
         bytes32 messageId = ccipRouter.ccipSend{ value: fee }(
             i_ethChainSelector,
-            msg
+            ccipMsg
         );
         emit MessageSent(messageId, i_ethChainSelector, i_ethVaultReceiver, borrower);
     }
