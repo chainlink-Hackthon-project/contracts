@@ -78,16 +78,20 @@ contract PoolTest is Test {
 
 
     /// @notice Withdrawl burns shares and retunrs correct USDT
-   function testWthdraw() public {
+   function testWithdraw() public {
     vm.prank(alice);
     pool.deposit(1_000e6);
+
+    uint256 usdtBefore = usdt.balanceOf(alice);
+    uint256 lpBefore = pool.balanceOf(alice);
+
     // poolAssets = 1000, supply = 1000 shares
     // withdraw 500 shares => get 500 USDT
     vm.prank(alice);
     pool.withdraw(500e6);
 
-    assertEq(pool.balanceOf(alice), 500e6, "Alice left with 500 shares");
-    assertEq(usdt.balanceOf(alice), 9_500e6, "Alice recovers 500 USDT");
+    assertEq(pool.balanceOf(alice), lpBefore - 500e6, "Alice left with 500 shares");
+    assertEq(usdt.balanceOf(alice), usdtBefore + 500e6, "Alice recovers 500 USDT");
    }
 
 
