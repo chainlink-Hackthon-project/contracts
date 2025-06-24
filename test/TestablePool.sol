@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.13;
 
-import "../src/Pool.sol";
+import {Pool} from "../src/Pool.sol";
 import {Client} from "lib/chainlink/contracts/src/v0.8/ccip/libraries/Client.sol";
 
 
 /// @notice Exposes Pool’s internal CCIP hook for testing
 contract TestablePool is Pool {
+
     constructor(
         address _usdt,
         address _ethUsdFeed,

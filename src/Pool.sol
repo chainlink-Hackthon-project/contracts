@@ -505,7 +505,6 @@ function _sendUnlockMessage(bytes32 lockId, address user) internal returns (byte
         usdt.transferFrom(msg.sender, address(this), repayAmount);
         debt[info.user]   = userDebt - repayAmount;
         totalBorrows     -= repayAmount;
-        emit Repaid(info.user, repayAmount);
 
         // --- 5) compute and remove collateral (with bonus) ---
         uint256 seizeUsd6 = (repayAmount * liquidationBonusBps) / 10_000;
@@ -520,6 +519,9 @@ function _sendUnlockMessage(bytes32 lockId, address user) internal returns (byte
         _sendLiquidateMessage(lockId, info.user, msg.sender, seizeWei);
 
         emit LiquidationExecuted(lockId, msg.sender, repayAmount, seizeWei);
+
+        emit Repaid(info.user, repayAmount);
+
     }
 
     /**

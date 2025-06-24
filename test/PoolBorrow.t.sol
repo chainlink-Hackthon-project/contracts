@@ -31,19 +31,19 @@ contract TestablePool is Pool {
     _usdt, _ethUsdFeed, _volFeed, _router, _ethChainSelector, _ethVaultReceiver
   ) {}
 
-function ccipReceivePublic(Client.Any2EVMMessage memory msg_) external {
-    _ccipReceive(msg_);
-  }
+    function ccipReceivePublic(Client.Any2EVMMessage memory msg_) external {
+        _ccipReceive(msg_);
+    }
 }
 
 contract PoolBorrowTest is Test {
-  MockUSDT            public usdt;
-  MockV3Aggregator    public priceFeed;
-  MockV3Aggregator    public volFeed;
-  TestablePool        public pool;
-  address             public alice = address(0xA11CE);
-  bytes32             public lockId;
-  uint256             public amountWei = 1e18; // 1 ETH
+    MockUSDT            public usdt;
+    MockV3Aggregator    public priceFeed;
+    MockV3Aggregator    public volFeed;
+    TestablePool        public pool;
+    address             public alice = address(0xA11CE);
+    bytes32             public lockId;
+    uint256             public amountWei = 1e18; // 1 ETH
 
 
   function setUp() public {
