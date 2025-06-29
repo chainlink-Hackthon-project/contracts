@@ -1,66 +1,29 @@
-## Foundry
+# CrossChain Lending Platform
 
-**Foundry is a blazing fast, portable and modular toolkit for Ethereum application development written in Rust.**
+## What is this project?
 
-Foundry consists of:
+This project is a cross-chain lending platform that lets users lock their Ethereum (ETH) as collateral on the Ethereum network and borrow USDT on the Avalanche network. It makes borrowing across chains easy and secure without manually moving assets.
 
--   **Forge**: Ethereum testing framework (like Truffle, Hardhat and DappTools).
--   **Cast**: Swiss army knife for interacting with EVM smart contracts, sending transactions and getting chain data.
--   **Anvil**: Local Ethereum node, akin to Ganache, Hardhat Network.
--   **Chisel**: Fast, utilitarian, and verbose solidity REPL.
+## How does it work?
 
-## Documentation
+- You lock your ETH on Ethereum using our smart contract.
+- The system confirms your locked ETH through a **double confirmation** process to ensure security.
+- After confirmation, you can borrow USDT from a liquidity pool on Avalanche.
+- Interest rates and loan limits change dynamically based on market conditions like asset supply and price volatility.
+- When you repay the borrowed USDT with interest, your ETH collateral is released back to you.
+- If the collateral value drops too much, automated liquidation protects the lenders.
 
-https://book.getfoundry.sh/
+## Key Features
 
-## Usage
+- **Cross-chain locking and messaging** using Chainlink’s CCIP for secure communication between Ethereum and Avalanche.
+- **Double confirmation mechanism** for verifying collateral locks.
+- **Liquidity pool model** allowing multiple lenders to provide funds fairly.
+- **Dynamic interest rates and LTV ratios** based on real-time oracle data.
+- **Automated liquidations** to reduce risk for lenders.
 
-### Build
+## Why use this?
 
-```shell
-$ forge build
-```
-
-### Test
-
-```shell
-$ forge test
-```
-
-### Format
-
-```shell
-$ forge fmt
-```
-
-### Gas Snapshots
-
-```shell
-$ forge snapshot
-```
-
-### Anvil
-
-```shell
-$ anvil
-```
-
-### Deploy
-
-```shell
-$ forge script script/Counter.s.sol:CounterScript --rpc-url <your_rpc_url> --private-key <your_private_key>
-```
-
-### Cast
-
-```shell
-$ cast <subcommand>
-```
-
-### Help
-
-```shell
-$ forge --help
-$ anvil --help
-$ cast --help
-```
+- Easily borrow funds on Avalanche while keeping your ETH on Ethereum.
+- No need to manually bridge assets or move funds.
+- Fair and adaptive interest rates save money for borrowers.
+- Safe and trustless cross-chain lending.
