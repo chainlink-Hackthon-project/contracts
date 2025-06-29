@@ -5,32 +5,37 @@ pragma solidity ^0.8.17;
 /// @notice A utilization‐based interest‐rate model with a kink and reserve factor.
 /// @dev All rates and factors are expressed in basis points (BPS), where 10 000 BPS = 100%.
 library InterestModel {
-    /// @dev BPS precision (100% = 10 000 BPS)
+    /// @dev Precision for basis points (100% = 10 000 BPS)
     uint256 public constant BPS = 10_000;
 
-    /// @notice Calculates the pool’s utilization rate as (borrows / (cash + borrows)).
-    /// @param cash    The amount of asset token sitting idle in the pool.
-    /// @param borrows The total amount the pool has lent out (principal + accrued interest).
-    /// @return utrBps The utilization rate, scaled to BPS (0 – 10 000).
+    /// @notice Calculates the pool’s utilization rate as borrows / (cash + borrows).
+    /// @param cash    Idle liquidity in the pool (token units).
+    /// @param borrows Total outstanding borrow balance (principal + accrued interest).
+    /// @return utrBps Utilization rate scaled to BPS (0 – 10 000).
+    /// @dev Returns 0 if borrows == 0; returns 100% (BPS) if cash == 0 and borrows > 0.
     function utilizationRate(uint256 cash, uint256 borrows)
         internal
         pure
         returns (uint256 utrBps)
     {
-        // If nobody’s borrowed or there’s no cash, utilization is zero.
-        if (borrows == 0) return 0;
-        if (cash ==0 && borrows > 0) return BPS;
-        // utrBps = borrows * BPS / (cash + borrows)
-        utrBps = (borrows * BPS) / (cash + borrows);
+        if (borrows == 0) {
+            return 0;
+        }
+        if (cash == 0) {
+            // All funds are borrowed → 100% utilization
+            return BPS;
+        }
+        // Standard case: borrows * BPS / (cash + borrows)
+        return (borrows * BPS) / (cash + borrows);
     }
 
-    /// @notice Computes the borrow APR (in BPS) given a utilization rate and curve parameters.
+    /// @notice Computes the borrow APR (in BPS) given a utilization rate and segmented slope curve.
     /// @param utrBps     Current utilization rate in BPS.
-    /// @param baseBps    The base APR in BPS (e.g. 300 = 3.00%).
-    /// @param slope1Bps  The slope (APR increase per 1 % U) before the kink, in BPS.
-    /// @param slope2Bps  The slope after the kink, in BPS (for “rush‐hour” pricing).
-    /// @param kinkBps    The utilization threshold (in BPS) at which the slope jumps.
-    /// @return brBps     The borrow APR, in BPS.
+    /// @param baseBps    Base APR in BPS (e.g. 300 = 3.00%).
+    /// @param slope1Bps  APR slope (per 1 % U) before the kink, in BPS.
+    /// @param slope2Bps  APR slope after the kink, in BPS.
+    /// @param kinkBps    Utilization threshold (in BPS) at which the APR slope changes.
+    /// @return brBps     Borrow APR in BPS.
     function getBorrowRate(
         uint256 utrBps,
         uint256 baseBps,
@@ -39,14 +44,15 @@ library InterestModel {
         uint256 kinkBps
     ) internal pure returns (uint256 brBps) {
         if (utrBps <= kinkBps) {
-            // Below or at the kink: linear increase
+            // Below or at kink: linear from base
             // br = base + (U * slope1) / BPS
             brBps = baseBps + (utrBps * slope1Bps) / BPS;
         } else {
-            // Above the kink: base + full first‐segment + excess at slope2
-            uint256 normalRate = baseBps + (kinkBps * slope1Bps) / BPS;
-            uint256 excessUtil  = utrBps - kinkBps;
-            uint256 excessRate  = (excessUtil * slope2Bps) / BPS;
+            // Above kink: full first‐segment + excess * slope2
+            uint256 firstSegment = (kinkBps * slope1Bps) / BPS;
+            uint256 normalRate   = baseBps + firstSegment;
+            uint256 excessUtil   = utrBps - kinkBps;
+            uint256 excessRate   = (excessUtil * slope2Bps) / BPS;
             brBps = normalRate + excessRate;
         }
     }
@@ -54,16 +60,18 @@ library InterestModel {
     /// @notice Computes the supply APR (in BPS) that depositors earn.
     /// @param utrBps           Current utilization rate in BPS.
     /// @param borrowRateBps    The borrow APR in BPS (from `getBorrowRate`).
-    /// @param reserveFactorBps The protocol’s reserve factor in BPS (e.g. 1000 = 10%).
-    /// @return srBps           The supply APR, in BPS.
+    /// @param reserveFactorBps Protocol reserve factor in BPS (portion of interest kept).
+    /// @return srBps           Supply APR in BPS.
     function getSupplyRate(
         uint256 utrBps,
         uint256 borrowRateBps,
         uint256 reserveFactorBps
     ) internal pure returns (uint256 srBps) {
-        // effectiveBorrowRate = borrowRate * (1 - reserveFactor)
+        // Effective borrow rate after reserving protocol fees:
+        // effective = borrowRate * (1 - reserveFactor)
         uint256 effectiveBorrow = (borrowRateBps * (BPS - reserveFactorBps)) / BPS;
-        // supplyRate = U * effectiveBorrow / BPS
+
+        // Supply APR = utilization * effective borrow rate / BPS
         srBps = (utrBps * effectiveBorrow) / BPS;
     }
 }
