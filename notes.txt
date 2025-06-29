@@ -1,0 +1,19 @@
+
+Vault.sol:
+        - Holds collateral(ETH) in a time locked manner
+        - intergrates with cross chain messaging, price oracles and liquidation mechanisms
+
+        constructor(uint256 duration)
+        lock()
+        unlock()
+
+
+
+Pool needs to:
+- Accept a stable coin
+- Allow deposits
+- Allow withdrawls
+- Allow borrows
+- Allow repayments
+- Track per user debt and total borrowed
+- Emit events: Deposited, Withdrawn, repaid, Borrowed
